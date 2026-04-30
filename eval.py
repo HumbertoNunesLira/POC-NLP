@@ -293,140 +293,46 @@ def avaliar_correcoes_simbolicas(df: pd.DataFrame) -> dict:
 #  7. RELATÓRIO CONSOLIDADO
 # ═══════════════════════════════════════════════════════════════════
 
-def gerar_relatorio(df: pd.DataFrame, verbose: bool = True) -> dict:
-    """Executa todas as avaliações e imprime um relatório consolidado."""
+def gerar_relatorio_robusto(df: pd.DataFrame):
+    """Gera um relatório focado na resiliência do pipeline contra ataques"""
+    
+    print("=" * 65)
+    print("  RELATÓRIO DE ROBUSTEZ (ATTACK vs NORMALIZED)")
+    print("=" * 65)
+    
+    total_linhas = len(df)
+    print(f"Total de variações processadas: {total_linhas}")
+    
+    # 1. Taxa de sucesso (Agrupamento Perfeito por Produto)
+    # Agrupamos pelo título original e checamos quantos nomes normalizados diferentes ele gerou
+    agrupamento = df.groupby("original")["normalized"].nunique()
+    
+    produtos_originais = len(agrupamento)
+    produtos_perfeitos = (agrupamento == 1).sum()
+    
+    print(f"Total de produtos originais únicos: {produtos_originais}")
+    print(f"Produtos normalizados perfeitamente (100% resiliente as variações): {produtos_perfeitos}")
+    print(f"Taxa de resiliência: {round((produtos_perfeitos / produtos_originais) * 100, 2)}%")
+    
+    # 2. Onde o modelo falhou (Vulnerabilidades)
+    falhas = agrupamento[agrupamento > 1]
+    
+    if len(falhas) > 0:
+        print("\n" + "=" * 65)
+        print("EXEMPLOS DE QUEBRA DE ROBUSTEZ")
+        print("Modelos originais listados abaixo geraram resultados canônicos diferentes:")
+        print("=" * 65)
+        
+        # Mostra até 3 exemplos de onde a perturbação quebrou a lógica
+        for original in falhas.index[:3]:
+            print(f"\nProduto Original: '{original}'")
+            print("Variações atacadas e o que o modelo entendeu delas:")
+            
+            sub_df = df[df["original"] == original]
+            for _, row in sub_df.iterrows():
+                print(f"  • Atacado: {row['attacked'][:50]:<52} → Normalizou: {row['normalized']}")
 
-    relatorio = {}
 
-    # ── 1. Qualidade JSON ──
-    qj = avaliar_qualidade_json(df)
-    relatorio["qualidade_json"] = qj
-    if verbose:
-        print("=" * 65)
-        print("  1. QUALIDADE DA EXTRAÇÃO JSON")
-        print("=" * 65)
-        print(f"  Total de registros:        {qj['total_registros']}")
-        print(f"  JSONs válidos com dados:   {qj['json_valido_com_dados']}  ({qj['taxa_extracao_ok']}%)")
-        print(f"  JSONs vazios/erro:         {qj['json_vazio_ou_erro']}")
-        print(f"  JSONs todos nulos:         {qj['json_todos_nulos']}")
-        print(f"  Taxa de falha total:       {qj['taxa_falha_total']}%")
-        print()
-
-    # ── 2. Completude de atributos ──
-    ca = avaliar_completude_atributos(df)
-    relatorio["completude_atributos"] = ca
-    if verbose:
-        print("=" * 65)
-        print("  2. COMPLETUDE DE ATRIBUTOS")
-        print("=" * 65)
-        for _, row in ca.iterrows():
-            barra = "█" * int(row["taxa_preenchimento_%"] / 5) + "░" * (20 - int(row["taxa_preenchimento_%"] / 5))
-            alerta = f"  {row['alerta']}" if row['alerta'] else ""
-            print(f"  {row['campo']:<22s} {barra} {row['taxa_preenchimento_%']:>6.1f}%  ({row['preenchido']}/{row['total_valido']}){alerta}")
-        print()
-
-    # ── 3. Agrupamento ──
-    ag = avaliar_agrupamento(df)
-    relatorio["agrupamento"] = ag
-    if verbose:
-        print("=" * 65)
-        print("  3. ANÁLISE DE AGRUPAMENTO")
-        print("=" * 65)
-        print(f"  Registros com nome:        {ag['total_registros_com_nome']}")
-        print(f"  Nomes canônicos únicos:    {ag['nomes_canonicos_unicos']}")
-        print(f"  Taxa de redução:           {ag['taxa_reducao_%']}%")
-        print(f"  Singletons:                {ag['singletons']}  ({ag['taxa_singletons_%']}% dos nomes)")
-        print(f"  Grupos com 2+ membros:     {ag['grupos_com_2+_membros']}")
-        print(f"  Maior grupo:               {ag['maior_grupo_tamanho']}x  →  \"{ag['maior_grupo_nome'][:60]}\"")
-        print(f"  Mediana do tamanho:         {ag['mediana_tamanho_grupo']}")
-        print()
-        print("  Top 10 maiores grupos:")
-        for nome, count in ag["top10_grupos"]:
-            print(f"    {count:>3d}x  {nome[:70]}")
-        print()
-
-    # ── 4. Consistência por categoria ──
-    cc = avaliar_consistencia_por_categoria(df)
-    relatorio["consistencia_categoria"] = cc
-    if verbose:
-        print("=" * 65)
-        print("  4. CONSISTÊNCIA POR CATEGORIA")
-        print("=" * 65)
-        for _, row in cc.iterrows():
-            print(f"  {row['categoria'][:40]:<42s} {row['titulos']:>3d} títulos → {row['nomes_unicos']:>3d} nomes  (redução {row['taxa_reducao_%']:>5.1f}%)  tipo: {row['tipo_produto_dominante'][:25]} ({row['consistencia_tipo_%']}%)")
-        print()
-
-    # ── 5. Corner-cases ──
-    corner = detectar_corner_cases(df)
-    relatorio["corner_cases"] = corner
-    if verbose:
-        print("=" * 65)
-        print("  5. CORNER-CASES DETECTADOS")
-        print("=" * 65)
-        print()
-        print("  Possíveis falsos positivos (títulos diferentes → mesmo canônico):")
-        if corner["possiveis_falsos_positivos"]:
-            for fp in corner["possiveis_falsos_positivos"]:
-                print(f"    Nome: \"{fp['nome_canonico'][:60]}\"  ({fp['quantidade']}x)")
-                for t in fp["exemplos_titulos"][:3]:
-                    print(f"      • {t[:80]}")
-                print()
-        else:
-            print("    Nenhum grupo grande detectado.\n")
-
-        print("  Possíveis falsos negativos (títulos similares → canônicos diferentes):")
-        if corner["possiveis_falsos_negativos"]:
-            for fn in corner["possiveis_falsos_negativos"][:5]:
-                print(f"    Sim={fn['similaridade']:.3f}")
-                print(f"      T1: {fn['titulo_1'][:70]}")
-                print(f"      T2: {fn['titulo_2'][:70]}")
-                print(f"      C1: {fn['canonico_1'][:60]}")
-                print(f"      C2: {fn['canonico_2'][:60]}")
-                print()
-        else:
-            print("    Nenhum par similar com canônicos divergentes encontrado.\n")
-
-    # ── 6. Correções simbólicas ──
-    cs = avaliar_correcoes_simbolicas(df)
-    relatorio["correcoes_simbolicas"] = cs
-    if verbose:
-        print("=" * 65)
-        print("  6. CORREÇÕES DA CAMADA SIMBÓLICA (Regex vs. LLM)")
-        print("=" * 65)
-        print(f"  Registros analisados:       {cs['total_analisado']}")
-        print(f"  Com pelo menos 1 correção:  {cs['registros_com_correcao']}  ({cs['taxa_correcao_%']}%)")
-        print(f"  Correções por campo:")
-        for campo, count in cs["correcoes_por_campo"].items():
-            print(f"    {campo:<22s}  {count:>4d} correções")
-        print()
-
-    # ── Resumo executivo ──
-    if verbose:
-        print("=" * 65)
-        print("  RESUMO EXECUTIVO")
-        print("=" * 65)
-        print(f"  Extração OK:     {qj['taxa_extracao_ok']}%")
-        print(f"  Redução naming:  {ag['taxa_reducao_%']}%  ({ag['total_registros_com_nome']} títulos → {ag['nomes_canonicos_unicos']} canônicos)")
-        print(f"  Singletons:      {ag['taxa_singletons_%']}%  (nomes sem agrupamento — alvo de melhoria)")
-        print(f"  Regex corrigiu:  {cs['taxa_correcao_%']}%  (indica margem de melhoria no prompt)")
-
-        # Diagnósticos
-        print()
-        print("  Diagnósticos:")
-        if qj["taxa_falha_total"] > 5:
-            print(f"    ⚠️  Taxa de falha JSON ({qj['taxa_falha_total']}%) acima de 5% — revisar robustez do prompt")
-        if ag["taxa_singletons_%"] > 70:
-            print(f"    ⚠️  {ag['taxa_singletons_%']}% singletons — pipeline pouco efetivo em agrupar")
-        if cs["taxa_correcao_%"] > 30:
-            print(f"    ⚠️  Regex corrigiu {cs['taxa_correcao_%']}% dos registros — o prompt pode incorporar essas regras")
-        for _, row in ca.iterrows():
-            if row["alerta"]:
-                print(f"    ⚠️  Campo '{row['campo']}' com apenas {row['taxa_preenchimento_%']}% de preenchimento")
-
-        print()
-        print("=" * 65)
-
-    return relatorio
 
 
 # ═══════════════════════════════════════════════════════════════════
